@@ -3279,3 +3279,60 @@ def test_split_deepseek_v4_mtp_writes_sidecar_without_index_mtp_entries(tmp_path
     assert "e_proj.weight" in weights
     assert "e_proj.scales" in weights
     assert "enorm.weight" in weights
+
+
+def _tiny_dspark_drafter(markov_head_type="rnn", confidence=True):
+    from mlx_vlm.speculative.drafters.dspark import DSparkConfig, DSparkDraftModel
+
+    cfg = DSparkConfig(
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=1,
+        num_key_value_heads=1,
+        head_dim=8,
+        vocab_size=16,
+        target_layer_ids=[0],
+        block_size=4,
+        mask_token_id=0,
+        markov_rank=4,
+        markov_head_type=markov_head_type,
+        enable_confidence_head=confidence,
+        confidence_head_with_markov=confidence,
+    )
+    drafter = DSparkDraftModel(cfg)
+    mx.eval(drafter.parameters())
+    target = SimpleNamespace(model=SimpleNamespace(embed_tokens=nn.Embedding(16, 8)))
+    return drafter.bind(target)
+
+
+def test_dspark_draft_block_smoke():
+    drafter = _tiny_dspark_drafter()
+    hidden = mx.zeros((1, 2, 8), dtype=mx.float32)
+    tokens, conf, cut = drafter.draft_block(1, hidden, drafter.make_cache(), 4)
+    mx.eval(tokens, conf)
+    assert tokens.shape == (1, 4)
+    assert conf.shape == (1, 4)
+    assert cut == 4
+    assert bool(mx.all(tokens >= 0)) and bool(mx.all(mx.isfinite(conf)))
+
+
+def test_dspark_confidence_threshold_trims_block():
+    drafter = _tiny_dspark_drafter()
+    hidden = mx.zeros((1, 2, 8), dtype=mx.float32)
+    _, _, cut_full = drafter.draft_block(
+        1, hidden, drafter.make_cache(), 4, confidence_threshold=0.0
+    )
+    _, _, cut_strict = drafter.draft_block(
+        1, hidden, drafter.make_cache(), 4, confidence_threshold=1.0
+    )
+    assert cut_full == 4  # threshold 0 keeps the whole block
+    assert cut_strict == 0  # sigmoid < 1 everywhere -> trims at position 0
+
+
+def test_dspark_without_confidence_head_returns_full_block():
+    drafter = _tiny_dspark_drafter(markov_head_type="vanilla", confidence=False)
+    hidden = mx.zeros((1, 2, 8), dtype=mx.float32)
+    tokens, conf, cut = drafter.draft_block(1, hidden, drafter.make_cache(), 4)
+    mx.eval(tokens)
+    assert conf is None and cut == 4 and tokens.shape == (1, 4)
