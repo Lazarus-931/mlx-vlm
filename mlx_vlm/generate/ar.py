@@ -932,6 +932,11 @@ class GenerationBatch:
         elif len(self.token_context) > len(self.uids):
             self.token_context = self.token_context[: len(self.uids)]
 
+    def _pad_logits_processors(self):
+        missing = len(self.uids) - len(self.logits_processors)
+        if missing > 0:
+            self.logits_processors.extend([None] * missing)
+
     def _greedy_argmax_step(self, inputs: mx.array, fwd_kwargs: dict):
         if (
             not self.greedy_sampling
@@ -1104,6 +1109,8 @@ class GenerationBatch:
         if self_has_processors or other_has_processors:
             self._ensure_token_context(force=bool(other_has_processors))
             other._ensure_token_context(force=bool(self_has_processors))
+            self._pad_logits_processors()
+            other._pad_logits_processors()
         else:
             self.token_context = []
             other.token_context = []
