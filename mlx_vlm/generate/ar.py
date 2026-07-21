@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import warnings
+from pathlib import Path
 from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -131,6 +132,38 @@ class _PositionedTargetSampler:
 def _generate_module_override(name: str, fallback):
     generate_module = sys.modules.get("mlx_vlm.generate")
     return getattr(generate_module, name, fallback) if generate_module else fallback
+
+
+# Subfolders searched for a shipped speculative drafter, in priority order.
+_AUTO_DRAFTER_SUBDIRS = ("draft", "mtp")
+
+
+def _load_auto_drafter(model_path):
+    """Load a speculative drafter shipped alongside a checkpoint, if present.
+
+    Looks for a drafter in ``<model_path>/draft`` (or legacy ``mtp``), loads
+    it, and resolves its kind from the drafter's own ``model_type`` so the
+    result works for any registered drafter family (Qwen3.5/3.6, DeepSeek-V4,
+    Gemma4, EAGLE3, DFlash). Returns ``(drafter_model, kind)`` or ``None`` when
+    no drafter is present or it fails to load -- callers then decode normally.
+    """
+    if model_path is None:
+        return None
+    for sub in _AUTO_DRAFTER_SUBDIRS:
+        draft_dir = Path(model_path) / sub
+        if not draft_dir.is_dir():
+            continue
+        try:
+            from ..speculative.drafters import resolve_drafter_kind
+            from ..utils import load_model as _load_model
+
+            return _load_model(draft_dir), resolve_drafter_kind(draft_dir)
+        except Exception as exc:  # never let a bad drafter break generation
+            logging.getLogger(__name__).warning(
+                "auto-drafter at %s disabled: %s", draft_dir, exc
+            )
+            return None
+    return None
 
 
 def normalize_resize_shape(values):
@@ -293,6 +326,21 @@ def generate_step(
             model.language_model,
             max_kv_size=max_kv_size,
         )
+
+    # Auto-drafter: if the checkpoint ships a speculative drafter in a `draft/`
+    # (or legacy `mtp/`) subfolder, enable speculative decoding by default.
+    # Family-agnostic -- the drafter kind is auto-detected from its model_type,
+    # so this covers every registered drafter (native MTP heads for
+    # Qwen3.5/3.6, DeepSeek-V4, Gemma4; EAGLE3; DFlash). A malformed drafter
+    # never breaks generation: on any error we fall back to plain decoding.
+    # Disable entirely with MLX_VLM_NO_AUTO_DRAFT=1.
+    if draft_model is None and os.environ.get("MLX_VLM_NO_AUTO_DRAFT", "") in ("", "0"):
+        cached = getattr(model, "_auto_drafter", "unset")
+        if cached == "unset":
+            cached = _load_auto_drafter(getattr(model, "model_path", None))
+            object.__setattr__(model, "_auto_drafter", cached)
+        if cached is not None:
+            draft_model, draft_kind = cached
 
     # Speculative decoding setup
     last_outputs = None

@@ -10035,3 +10035,51 @@ class TestQwenMRoPEDecodeContinuation(unittest.TestCase):
         reference = self._decode_logits(lm, with_delta_kwarg=False)
         subject = self._decode_logits(lm, with_delta_kwarg=True)
         self.assertTrue(mx.allclose(reference, subject, atol=1e-5).item())
+
+
+class TestAutoDrafter(unittest.TestCase):
+    """generate_step auto-loads a shipped drafter, family-agnostically."""
+
+    def test_no_drafter_when_absent(self):
+        import tempfile
+
+        from mlx_vlm.generate.ar import _load_auto_drafter
+
+        self.assertIsNone(_load_auto_drafter(None))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(_load_auto_drafter(d))
+
+    def test_malformed_drafter_falls_back(self):
+        import json
+        import os
+        import tempfile
+
+        from mlx_vlm.generate.ar import _load_auto_drafter
+
+        # A draft/ dir with a config but no weights must not raise; it should
+        # degrade to plain decoding (None).
+        with tempfile.TemporaryDirectory() as d:
+            draft = os.path.join(d, "draft")
+            os.makedirs(draft)
+            with open(os.path.join(draft, "config.json"), "w") as f:
+                json.dump({"model_type": "qwen3_5_mtp"}, f)
+            self.assertIsNone(_load_auto_drafter(d))
+
+    def test_drafter_kind_is_family_agnostic(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from mlx_vlm.speculative.drafters import resolve_drafter_kind
+
+        # Every registered native-MTP family resolves to the "mtp" kind from
+        # the drafter's own model_type -- no per-family flag needed.
+        for model_type, expected in (
+            ("qwen3_5_mtp", "mtp"),
+            ("gemma4_assistant", "mtp"),
+            ("deepseek_v4_mtp", "mtp"),
+        ):
+            with tempfile.TemporaryDirectory() as d:
+                with open(Path(d) / "config.json", "w") as f:
+                    json.dump({"model_type": model_type}, f)
+                self.assertEqual(resolve_drafter_kind(Path(d)), expected)
