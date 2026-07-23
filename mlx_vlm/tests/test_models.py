@@ -10510,5 +10510,73 @@ class TestAWQ(unittest.TestCase):
         self.assertLess(float(mx.max(mx.abs(block(x) - y0))), 1e-6)
 
 
+class _DWQTiny(nn.Module):
+    def __init__(self, vocab=128, dim=64):
+        super().__init__()
+        self.embed = nn.Embedding(vocab, dim)
+        self.fc = nn.Linear(dim, dim, bias=False)
+        self.head = nn.Linear(dim, vocab, bias=False)
+
+    def __call__(self, ids):
+        return self.head(self.fc(self.embed(ids)))
+
+
+class TestDWQ(unittest.TestCase):
+    def _setup(self):
+        mx.random.seed(0)
+        model = _DWQTiny()
+        mx.eval(model.parameters())
+        ids = mx.array([[1, 5, 9, 3, 7, 2]])
+        return model, ids, (lambda x: model(x))
+
+    def _quantize(self, model):
+        def pred(path, mod):
+            return hasattr(mod, "to_quantized") and int(mod.weight.shape[-1]) % 32 == 0
+
+        nn.quantize(model, 32, 4, class_predicate=pred)
+
+    def test_loss_decreases(self):
+        from mlx_vlm.quant import apply_dwq, capture_teacher
+
+        model, ids, fwd = self._setup()
+        teacher = capture_teacher(fwd, [ids])
+        self._quantize(model)
+        summary = apply_dwq(model, fwd, [ids], teacher, steps=100, lr=1e-3)
+        self.assertIsNotNone(summary["final_loss"])
+        self.assertLess(summary["final_loss"], summary["first_loss"])
+
+    def test_only_scales_biases_change(self):
+        from mlx_vlm.quant import apply_dwq, capture_teacher
+
+        model, ids, fwd = self._setup()
+        teacher = capture_teacher(fwd, [ids])
+        self._quantize(model)
+        weight_before = mx.array(model.head.weight)
+        scales_before = mx.array(model.head.scales)
+        apply_dwq(model, fwd, [ids], teacher, steps=40, lr=1e-3)
+        self.assertTrue(mx.array_equal(model.head.weight, weight_before))
+        self.assertFalse(mx.array_equal(model.head.scales, scales_before))
+
+    def test_shapes_preserved(self):
+        from mlx_vlm.quant import apply_dwq, capture_teacher
+
+        model, ids, fwd = self._setup()
+        teacher = capture_teacher(fwd, [ids])
+        self._quantize(model)
+        apply_dwq(model, fwd, [ids], teacher, steps=10, lr=1e-3)
+        self.assertEqual(fwd(ids).shape, (1, 6, 128))
+
+    def test_zero_steps_is_noop(self):
+        from mlx_vlm.quant import apply_dwq, capture_teacher
+
+        model, ids, fwd = self._setup()
+        teacher = capture_teacher(fwd, [ids])
+        self._quantize(model)
+        scales_before = mx.array(model.head.scales)
+        summary = apply_dwq(model, fwd, [ids], teacher, steps=0, lr=1e-3)
+        self.assertIsNone(summary["final_loss"])
+        self.assertTrue(mx.array_equal(model.head.scales, scales_before))
+
+
 if __name__ == "__main__":
     unittest.main()

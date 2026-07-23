@@ -182,6 +182,27 @@ def _apply_awq_calibration(model, processor, target, q_bits, q_group_size):
     print(f"[INFO] AWQ scaling applied: {summary}")
 
 
+def _prepare_dwq(model, processor, target, max_tokens=128):
+    """Build the logits forward, calibration inputs and cached teacher for DWQ."""
+    from .quant import DEFAULT_CALIBRATION_TEXT, capture_teacher, logits_forward
+
+    tokenizer = getattr(processor, "tokenizer", processor)
+    is_text = getattr(model, "_is_text_model", False)
+    module = target if is_text else model
+    forward = logits_forward(module)
+    if forward is None and module is not model:
+        module = model
+        forward = logits_forward(module)
+    if forward is None:
+        raise RuntimeError("Could not run a logits forward pass for DWQ.")
+    inputs = [
+        mx.array([tokenizer.encode(text)[:max_tokens]])
+        for text in DEFAULT_CALIBRATION_TEXT
+    ]
+    teacher = capture_teacher(forward, inputs)
+    return module, forward, inputs, teacher
+
+
 def convert(
     hf_path: str,
     mlx_path: str = "mlx_model",
@@ -190,6 +211,8 @@ def convert(
     q_bits: int = 4,
     q_mode: str = "affine",
     quant_method: str = "rtn",
+    dwq_steps: int = 200,
+    dwq_lr: float = 3e-6,
     dtype: Optional[str] = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
@@ -256,7 +279,14 @@ def convert(
             config, target, q_group_size, q_bits, q_mode
         )
 
-        if quant_method == "awq":
+        do_awq = "awq" in quant_method
+        do_dwq = "dwq" in quant_method
+
+        dwq_state = None
+        if do_dwq:
+            dwq_state = _prepare_dwq(model, processor, target)
+
+        if do_awq:
             print("[INFO] Calibrating (AWQ)")
             _apply_awq_calibration(model, processor, target, q_bits, q_group_size)
 
@@ -270,6 +300,16 @@ def convert(
             mode=q_mode,
             quant_predicate=quant_predicate,
         )
+
+        if do_dwq and dwq_state is not None:
+            from .quant import apply_dwq
+
+            module, forward, inputs, teacher = dwq_state
+            print("[INFO] Distilling (DWQ)")
+            summary = apply_dwq(
+                module, forward, inputs, teacher, steps=dwq_steps, lr=dwq_lr
+            )
+            print(f"[INFO] DWQ applied: {summary}")
 
     if dequantize:
         from .quant_utils import dequantize_model
@@ -361,8 +401,20 @@ def configure_parser() -> argparse.ArgumentParser:
         "--quant-method",
         help="Weight quantization method.",
         type=str,
-        choices=["rtn", "awq"],
+        choices=["rtn", "awq", "dwq", "awq+dwq"],
         default="rtn",
+    )
+    parser.add_argument(
+        "--dwq-steps",
+        help="Distillation steps for DWQ quantization methods.",
+        type=int,
+        default=200,
+    )
+    parser.add_argument(
+        "--dwq-lr",
+        help="Distillation learning rate for DWQ quantization methods.",
+        type=float,
+        default=3e-6,
     )
     parser.add_argument(
         "--dtype",
