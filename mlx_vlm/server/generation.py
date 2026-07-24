@@ -61,17 +61,12 @@ class PromptTooLongError(ValueError):
     """Raised when a request exceeds the configured server context budget."""
 
 
-_device_streams: dict = {}
-
-
 def _stream_for_device(device_name):
-    if device_name not in ("cpu", "gpu"):
-        return None
-    stream = _device_streams.get(device_name)
-    if stream is None:
-        stream = mx.new_stream(mx.cpu if device_name == "cpu" else mx.gpu)
-        _device_streams[device_name] = stream
-    return stream
+    if device_name == "cpu":
+        return mx.default_stream(mx.cpu)
+    if device_name == "gpu":
+        return mx.default_stream(mx.gpu)
+    return None
 
 
 def _get_draft_block_size_from_env():
