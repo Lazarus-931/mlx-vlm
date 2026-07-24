@@ -61,6 +61,19 @@ class PromptTooLongError(ValueError):
     """Raised when a request exceeds the configured server context budget."""
 
 
+_device_streams: dict = {}
+
+
+def _stream_for_device(device_name):
+    if device_name not in ("cpu", "gpu"):
+        return None
+    stream = _device_streams.get(device_name)
+    if stream is None:
+        stream = mx.new_stream(mx.cpu if device_name == "cpu" else mx.gpu)
+        _device_streams[device_name] = stream
+    return stream
+
+
 def _get_draft_block_size_from_env():
     draft_block_size_str = os.environ.get("MLX_VLM_DRAFT_BLOCK_SIZE")
     return int(draft_block_size_str) if draft_block_size_str else None
@@ -678,6 +691,7 @@ class GenerationArguments:
     p_less: bool = False
     typical_p: float = 1.0
     seed: Optional[int] = None
+    device: Optional[str] = None
     logprobs: bool = False
     repetition_penalty: Optional[float] = None
     repetition_context_size: Optional[int] = DEFAULT_REPETITION_CONTEXT_SIZE
@@ -1692,7 +1706,8 @@ class ResponseGenerator:
                             quantized_kv_start=self.quantized_kv_start,
                             compute_logprobs=bool(args.logprobs),
                             top_logprobs_k=self.top_logprobs_k if args.logprobs else 0,
-                            stream=generation_stream,
+                            stream=_stream_for_device(getattr(args, "device", None))
+                            or generation_stream,
                             apc_manager=self.apc_manager,
                             draft_model=self.draft_model,
                             draft_kind=self.draft_kind,
