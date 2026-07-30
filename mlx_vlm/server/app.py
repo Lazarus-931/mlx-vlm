@@ -334,8 +334,13 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def load_audio_model(model_path: str):
-    from mlx_audio.utils import load_model
+def load_audio_model(model_path: str, model_kind: str = "audio"):
+    if model_kind == "audio_stt":
+        from mlx_audio.stt.utils import load_model
+    elif model_kind == "audio_tts":
+        from mlx_audio.tts.utils import load_model
+    else:
+        from mlx_audio.utils import load_model
 
     return load_model(model_path)
 
@@ -605,7 +610,7 @@ def get_cached_model(
         logger.info("Loading audio model: %s", model_path)
         try:
             model = _server_package_attr("load_audio_model", load_audio_model)(
-                model_path
+                model_path, model_kind=effective_model_kind
             )
         except RepositoryNotFoundError as e:
             raise HTTPException(
