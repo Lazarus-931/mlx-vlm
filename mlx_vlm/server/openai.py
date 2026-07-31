@@ -815,7 +815,9 @@ async def responses_input_tokens_endpoint(request: Request):
         _ensure_effective_input(chat_messages, images=images)
 
         model, processor, config = get_cached_model(
-            openai_request.model, _adapter_path_or_inherit(openai_request)
+            openai_request.model,
+            _adapter_path_or_inherit(openai_request),
+            device=getattr(openai_request, "device", None),
         )
         del model
         chat_tools, _ = _response_tool_registry(openai_request.tools)
@@ -977,7 +979,9 @@ async def responses_endpoint(request: Request):
 
         # Get model, processor, config - loading if necessary
         model, processor, config = get_cached_model(
-            openai_request.model, _adapter_path_or_inherit(openai_request)
+            openai_request.model,
+            _adapter_path_or_inherit(openai_request),
+            device=getattr(openai_request, "device", None),
         )
 
         chat_tools, tool_registry = _response_tool_registry(openai_request.tools)
@@ -1686,7 +1690,9 @@ async def chat_completions_endpoint(request: ChatRequest, http_request: Request)
             request.tool_choice,
         )
 
-        model, processor, config = get_cached_model(request.model, adapter_path)
+        model, processor, config = get_cached_model(
+            request.model, adapter_path, device=getattr(request, "device", None)
+        )
 
         # Detect tool parser from chat template
         tool_parser_type = _infer_tool_parser_from_processor(processor)

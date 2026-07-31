@@ -103,9 +103,20 @@ def _model_cache_registry() -> ModelCacheRegistry:
     return registry
 
 
+def _current_device_name() -> str:
+    return "cpu" if mx.default_device().type == mx.DeviceType.cpu else "gpu"
+
+
 def _server_runtime_snapshot() -> dict:
     registry = _model_cache_registry()
-    default_cache = registry.for_kind("text_generation")
+    default_cache = {}
+    if runtime.response_generator is not None:
+        for _group, _cache in registry.items():
+            if _cache.get("response_generator") is runtime.response_generator:
+                default_cache = _cache
+                break
+    if not default_cache:
+        default_cache = registry.for_kind("text_generation")
     processor = default_cache.get("processor")
     config = default_cache.get("config")
     text_config = getattr(config, "text_config", None)
@@ -323,8 +334,13 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def load_audio_model(model_path: str):
-    from mlx_audio.utils import load_model
+def load_audio_model(model_path: str, model_kind: str = "audio"):
+    if model_kind == "audio_stt":
+        from mlx_audio.stt.utils import load_model
+    elif model_kind == "audio_tts":
+        from mlx_audio.tts.utils import load_model
+    else:
+        from mlx_audio.utils import load_model
 
     return load_model(model_path)
 
@@ -462,6 +478,7 @@ def get_cached_model(
     adapter_path=_INHERIT_ADAPTER,
     *,
     model_kind: str = "auto",
+    device=None,
 ):
     """
     Factory function to get or load the appropriate model resources from cache or by loading.
@@ -486,8 +503,9 @@ def get_cached_model(
         cache_group = "image_generation"
         effective_model_kind = "image_generation"
     else:
-        cache_group = "text_generation"
         effective_model_kind = "text_generation" if model_kind == "auto" else model_kind
+        resolved_device = device if device in ("cpu", "gpu") else _current_device_name()
+        cache_group = f"text_generation::{model_path}::{resolved_device}"
 
     registry = _model_cache_registry()
     if adapter_path is _INHERIT_ADAPTER:
@@ -500,7 +518,7 @@ def get_cached_model(
 
     # Return from cache if already loaded and matches the requested paths
     if cached_cache and cached_cache.get("cache_key") == cache_key:
-        if cache_group == "text_generation":
+        if cache_group.startswith("text_generation"):
             runtime.response_generator = cached_cache.get("response_generator")
             runtime.apc_manager = cached_cache.get("apc_manager")
         logger.debug("Using cached model: %s (adapter=%s)", model_path, adapter_path)
@@ -592,7 +610,7 @@ def get_cached_model(
         logger.info("Loading audio model: %s", model_path)
         try:
             model = _server_package_attr("load_audio_model", load_audio_model)(
-                model_path
+                model_path, model_kind=effective_model_kind
             )
         except RepositoryNotFoundError as e:
             raise HTTPException(

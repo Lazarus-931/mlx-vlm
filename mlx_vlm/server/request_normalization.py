@@ -168,8 +168,12 @@ def _build_gen_args(
     default_top_k = _model_config_field_or_default(processor, "top_k", 0)
     if _model_config_field_or_default(processor, "do_sample", None) is False:
         default_temperature = 0.0
+    requested_device = getattr(request, "device", None)
+    if requested_device not in ("cpu", "gpu"):
+        requested_device = None
     args = GenerationArguments(
         max_tokens=max_tokens,
+        device=requested_device,
         temperature=_request_field_or_default(
             request, "temperature", default_temperature
         ),
