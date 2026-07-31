@@ -16,6 +16,7 @@ from .utils import (
 
 EMBEDDING_MODEL_REMAPPING = {
     "qwen3": "qwen3_embedding",
+    "qwen3_vl": "qwen3_vl_embedding",
     "gemma3_text": "gemma3_embedding",
     "lfm2": "lfm2_embedding",
     "xlm-roberta": "xlm_roberta",
@@ -88,6 +89,24 @@ def load_embedding_model(model_path: Path, lazy: bool = False, **kwargs) -> nn.M
     if hasattr(model_class, "LanguageModel") and hasattr(model_config, "text_config"):
         weights = sanitize_weights(
             model_class.LanguageModel, weights, model_config.text_config
+        )
+
+    quantization = config.get("quantization", None)
+    if quantization is not None:
+
+        def _quant_predicate(path, module):
+            if not hasattr(module, "to_quantized"):
+                return False
+            if hasattr(module, "weight") and module.weight.size % 64 != 0:
+                return False
+            return f"{path}.scales" in weights
+
+        nn.quantize(
+            model,
+            group_size=quantization["group_size"],
+            bits=quantization["bits"],
+            mode=quantization.get("mode", "affine"),
+            class_predicate=_quant_predicate,
         )
 
     model.load_weights(list(weights.items()), strict=strict)
