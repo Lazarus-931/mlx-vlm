@@ -3654,6 +3654,58 @@ class TestModels(unittest.TestCase):
         self.assertEqual(vision_config.num_hidden_layers, 12)
         self.assertEqual(vision_config.intermediate_size, 3072)
 
+    def test_smolvlm_merges_multi_image_features(self):
+        from mlx_vlm.models import smolvlm
+
+        config = smolvlm.ModelConfig(
+            text_config=smolvlm.TextConfig(
+                hidden_size=32,
+                intermediate_size=64,
+                num_attention_heads=4,
+                num_hidden_layers=2,
+                vocab_size=200,
+            ),
+            vision_config=smolvlm.VisionConfig(
+                hidden_size=16,
+                num_attention_heads=4,
+                patch_size=4,
+                num_hidden_layers=1,
+                intermediate_size=32,
+                image_size=16,
+            ),
+            scale_factor=2,
+            image_token_id=99,
+            vocab_size=200,
+        )
+        model = smolvlm.Model(config)
+        mx.eval(model.parameters())
+
+        n_images, tokens_per_image = 2, 3
+        image_features = mx.random.normal(
+            (n_images * tokens_per_image, config.text_config.hidden_size)
+        )
+
+        input_ids_np = np.zeros((1, 12), dtype=np.int64)
+        image_positions = [1, 2, 3, 6, 7, 8]
+        for pos in image_positions:
+            input_ids_np[0, pos] = config.image_token_index
+        input_ids = mx.array(input_ids_np)
+
+        pixel_values = mx.ones((1, n_images, 3, 16, 16))
+
+        result = model.get_input_embeddings(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            cached_image_features=image_features,
+        )
+        mx.eval(result.inputs_embeds)
+
+        self.assertEqual(result.inputs_embeds.shape, (1, 12, 32))
+        for i, pos in enumerate(image_positions):
+            self.assertTrue(
+                mx.allclose(result.inputs_embeds[0, pos], image_features[i]).item()
+            )
+
     def test_internvl_chat(self):
         from mlx_vlm.models import internvl_chat
 
