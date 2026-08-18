@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import mlx.core as mx
 
-from mlx_vlm.models.qwen3_5.fp8 import (
+from mlx_vlm.models.qwen3_5.language import (
     _dequantize_qwen_fp8_weight,
     convert_qwen_fp8_weights,
     make_quantization_config,

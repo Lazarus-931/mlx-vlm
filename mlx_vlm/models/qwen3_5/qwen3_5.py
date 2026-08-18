@@ -8,8 +8,7 @@ from ..qwen3_vl import Model as Qwen3VLModel
 from ..qwen3_vl import processing_qwen3_vl  # noqa: F401
 from ..qwen3_vl.qwen3_vl import masked_scatter
 from .config import ModelConfig
-from .fp8 import convert_qwen_fp8_weights
-from .language import LanguageModel
+from .language import LanguageModel, convert_qwen_fp8_weights
 from .vision import VisionModel
 
 

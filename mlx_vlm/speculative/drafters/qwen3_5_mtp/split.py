@@ -8,7 +8,7 @@ from typing import Dict, Iterable, Optional
 import mlx.core as mx
 from safetensors import safe_open
 
-from ....models.qwen3_5.fp8 import make_quantization_config
+from ....models.qwen3_5.language import make_quantization_config
 from ....utils import get_model_path
 from .qwen3_5_mtp import Qwen3_5MTPDraftModel
 
