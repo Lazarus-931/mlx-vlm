@@ -13602,6 +13602,7 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
 
     def test_zero_width_values_graph_stays_bounded(self):
         from mlx_vlm.models.cache import (
+            BatchKVCache,
             BatchRotatingKVCache,
             BufferedRotatingKVCache,
             KVCache,
@@ -13618,6 +13619,7 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
 
         cases = (
             ("KVCache", lambda: KVCache(), 1),
+            ("BatchKVCache", lambda: BatchKVCache(left_padding=[0, 1]), 2),
             ("RotatingKVCache", lambda: RotatingKVCache(max_size=8), 1),
             (
                 "BatchRotatingKVCache",
@@ -13635,6 +13637,48 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
                 short = run(make_cache(), batch, 16)
                 long = run(make_cache(), batch, 256)
                 self.assertLessEqual(long, short + 2)
+
+    def test_batch_kv_guard_survives_merge_and_extract(self):
+        from mlx_vlm.models.cache import BatchKVCache, KVCache
+
+        decode_steps = (16, 256)
+
+        def check_decode(cache, batch):
+            counts = []
+            for steps in decode_steps:
+                for step in range(steps):
+                    keys = mx.full((batch, 1, 1, 4), step % 7, dtype=mx.float32)
+                    cached_keys, _ = cache.update_and_fetch(keys, keys[..., :0])
+                    mx.eval(cached_keys)
+                self.assertEqual(cache.values.shape[-1], 0)
+                counts.append(self._edges(cache.values))
+            self.assertLessEqual(counts[1], counts[0] + 2)
+
+        for lengths in ((0, 0), (3, 3), (0, 5), (3, 5)):
+            with self.subTest(lengths=lengths):
+                rows = []
+                for row, length in enumerate(lengths):
+                    cache = KVCache()
+                    if length:
+                        keys = mx.full((1, 1, length, 4), row + 1, dtype=mx.float32)
+                        cache.update_and_fetch(keys, keys[..., :0])
+                        mx.eval(cache.keys)
+                    rows.append(cache)
+
+                batch = KVCache.merge(rows)
+                self.assertIsInstance(batch, BatchKVCache)
+                self.assertEqual(batch.offset.tolist(), list(lengths))
+                self.assertEqual(
+                    batch.left_padding.tolist(),
+                    [max(lengths) - length for length in lengths],
+                )
+                check_decode(batch, len(lengths))
+                for row, length in enumerate(lengths):
+                    with self.subTest(row=row):
+                        extracted = batch.extract(row)
+                        self.assertIsInstance(extracted, KVCache)
+                        self.assertEqual(extracted.offset, length + sum(decode_steps))
+                        check_decode(extracted, 1)
 
     def test_normal_values_are_unaffected(self):
         from mlx_vlm.models.cache import KVCache, RotatingKVCache
