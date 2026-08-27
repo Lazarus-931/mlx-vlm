@@ -13693,6 +13693,79 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
             self.assertEqual(cache.values.shape[-1], 4)
             self.assertGreater(float(cache.values.sum()), 0.0)
 
+    def test_apc_guard_with_unequal_prefix_lengths(self):
+        from mlx_vlm.apc import make_warm_batch_exact_cache_multi
+        from mlx_vlm.models.cache import KVCache, RotatingKVCache
+
+        cases = (
+            ("kv", KVCache, None),
+            ("rotating", lambda: RotatingKVCache(max_size=8), 8),
+        )
+        for name, make_cache, window in cases:
+            for lengths in ((3, 5), (5, 3)):
+                with self.subTest(cache=name, lengths=lengths):
+                    rows, histories = [], []
+                    for row, length in enumerate(lengths):
+                        keys = mx.arange(length * 4, dtype=mx.float32).reshape(
+                            1, 1, length, 4
+                        ) + 100 * (row + 1)
+                        cache = make_cache()
+                        cache.update_and_fetch(keys, keys[..., :0])
+                        rows.append([cache])
+                        histories.append(keys)
+
+                    caches, prefix = make_warm_batch_exact_cache_multi(rows, lengths)
+                    self.assertIsNotNone(caches)
+                    self.assertEqual(prefix, max(lengths))
+                    cache = caches[0]
+                    self.assertEqual(cache.offset.tolist(), list(lengths))
+                    self.assertEqual(cache._idx, prefix)
+                    self.assertEqual(
+                        cache.left_padding.tolist(),
+                        [prefix - length for length in lengths],
+                    )
+                    for row, keys in enumerate(histories):
+                        expected = mx.pad(
+                            keys,
+                            [(0, 0), (0, 0), (prefix - lengths[row], 0), (0, 0)],
+                        )
+                        self.assertTrue(
+                            mx.array_equal(cache.keys[row : row + 1], expected).item()
+                        )
+
+                    counts = []
+                    decoded = 0
+                    for steps in (16, 256):
+                        for step in range(steps):
+                            keys = mx.arange(8, dtype=mx.float32).reshape(2, 1, 1, 4)
+                            keys = keys + 1000 + 10 * (decoded + step)
+                            cached_keys, _ = cache.update_and_fetch(keys, keys[..., :0])
+                            mx.eval(cached_keys)
+                            for row in range(2):
+                                histories[row] = mx.concatenate(
+                                    [histories[row], keys[row : row + 1]], axis=2
+                                )
+                        decoded += steps
+                        counts.append(self._edges(cache.values))
+                        self.assertEqual(cache.values.shape[-1], 0)
+                        self.assertEqual(
+                            cache.offset.tolist(),
+                            [length + decoded for length in lengths],
+                        )
+                        for row, history in enumerate(histories):
+                            extracted = cache.extract(row)
+                            expected = (
+                                history if window is None else history[..., -window:, :]
+                            )
+                            self.assertEqual(extracted.offset, lengths[row] + decoded)
+                            self.assertTrue(
+                                mx.array_equal(extracted.keys, expected).item()
+                            )
+                            self.assertEqual(
+                                extracted.values.shape, (*expected.shape[:-1], 0)
+                            )
+                    self.assertLessEqual(counts[1], counts[0] + 2)
+
     def test_guard_survives_merge_extract_and_apc(self):
         from mlx_vlm.apc import _merge_exact_cache_entries
         from mlx_vlm.models.cache import BatchRotatingKVCache, RotatingKVCache
