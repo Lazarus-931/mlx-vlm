@@ -13681,17 +13681,65 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
                         check_decode(extracted, 1)
 
     def test_normal_values_are_unaffected(self):
-        from mlx_vlm.models.cache import KVCache, RotatingKVCache
+        from mlx_vlm.models.cache import (
+            BatchKVCache,
+            BatchRotatingKVCache,
+            BufferedRotatingKVCache,
+            KVCache,
+            RotatingKVCache,
+        )
 
-        for make_cache in (lambda: KVCache(), lambda: RotatingKVCache(max_size=8)):
-            cache = make_cache()
-            for step in range(12):
-                k = mx.full((1, 1, 1, 4), step + 1, dtype=mx.float32)
-                v = mx.full((1, 1, 1, 4), step + 1, dtype=mx.float32)
-                _, cached_values = cache.update_and_fetch(k, v)
-                mx.eval(cached_values)
-            self.assertEqual(cache.values.shape[-1], 4)
-            self.assertGreater(float(cache.values.sum()), 0.0)
+        cases = (
+            ("KVCache", KVCache, 1),
+            ("RotatingKVCache", lambda: RotatingKVCache(max_size=8), 1),
+            ("BatchKVCache", lambda: BatchKVCache(left_padding=[0, 1]), 2),
+            (
+                "BatchRotatingKVCache",
+                lambda: BatchRotatingKVCache(max_size=8, left_padding=[0, 1]),
+                2,
+            ),
+            (
+                "BufferedRotatingKVCache",
+                lambda: BufferedRotatingKVCache(max_size=8, buffer_size=4),
+                1,
+            ),
+        )
+        for name, make_cache, batch in cases:
+            for dtype in (mx.float32, mx.float16):
+                for value_dim in (3, 4):
+                    with self.subTest(cache=name, dtype=dtype, value_dim=value_dim):
+                        cache, reference = make_cache(), make_cache()
+                        # The undecorated implementation is the expected behavior
+                        # when values are nonempty.
+                        reference_update = type(reference).update_and_fetch.__wrapped__
+                        for step, length in enumerate((3, 1, 4, 1, 2, 1) * 4):
+                            keys = (
+                                mx.arange(batch * length * 4, dtype=dtype).reshape(
+                                    batch, 1, length, 4
+                                )
+                                + step
+                            )
+                            values = (
+                                mx.arange(
+                                    batch * length * value_dim, dtype=dtype
+                                ).reshape(batch, 1, length, value_dim)
+                                + 1000
+                                + 10 * step
+                            )
+                            actual = cache.update_and_fetch(keys, values)
+                            expected = reference_update(reference, keys, values)
+                            mx.eval(actual, expected)
+                            for actual_array, expected_array in zip(actual, expected):
+                                self.assertTrue(
+                                    mx.array_equal(actual_array, expected_array).item()
+                                )
+                            self.assertEqual(actual[1].shape[-1], value_dim)
+                            self.assertTrue(
+                                mx.array_equal(cache.keys, reference.keys).item()
+                            )
+                            self.assertTrue(
+                                mx.array_equal(cache.values, reference.values).item()
+                            )
 
     def test_apc_guard_with_unequal_prefix_lengths(self):
         from mlx_vlm.apc import make_warm_batch_exact_cache_multi
