@@ -13574,6 +13574,32 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
         mx.export_to_dot(graph, array)
         return graph.getvalue().count("->")
 
+    def test_guard_preserves_method_metadata(self):
+        from mlx_vlm.models.cache import _key_only_guard
+
+        class Cache:
+            def update_and_fetch(self, keys: mx.array, values: mx.array):
+                """Return the updated keys and values."""
+                return keys, values
+
+        original = Cache.update_and_fetch
+        wrapped = _key_only_guard(Cache).update_and_fetch
+
+        self.assertIs(wrapped.__wrapped__, original)
+        self.assertIs(inspect.unwrap(wrapped), original)
+        self.assertEqual(inspect.signature(wrapped), inspect.signature(original))
+        for attribute in (
+            "__name__",
+            "__qualname__",
+            "__module__",
+            "__doc__",
+            "__annotations__",
+        ):
+            with self.subTest(attribute=attribute):
+                self.assertEqual(
+                    getattr(wrapped, attribute), getattr(original, attribute)
+                )
+
     def test_zero_width_values_graph_stays_bounded(self):
         from mlx_vlm.models.cache import (
             BatchRotatingKVCache,
