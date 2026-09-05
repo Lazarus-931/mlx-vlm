@@ -14573,8 +14573,35 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
         mx.export_to_dot(graph, array)
         return graph.getvalue().count("->")
 
+    def test_guard_preserves_method_metadata(self):
+        from mlx_vlm.models.cache import _key_only_guard
+
+        class Cache:
+            def update_and_fetch(self, keys: mx.array, values: mx.array):
+                """Return the updated keys and values."""
+                return keys, values
+
+        original = Cache.update_and_fetch
+        wrapped = _key_only_guard(Cache).update_and_fetch
+
+        self.assertIs(wrapped.__wrapped__, original)
+        self.assertIs(inspect.unwrap(wrapped), original)
+        self.assertEqual(inspect.signature(wrapped), inspect.signature(original))
+        for attribute in (
+            "__name__",
+            "__qualname__",
+            "__module__",
+            "__doc__",
+            "__annotations__",
+        ):
+            with self.subTest(attribute=attribute):
+                self.assertEqual(
+                    getattr(wrapped, attribute), getattr(original, attribute)
+                )
+
     def test_zero_width_values_graph_stays_bounded(self):
         from mlx_vlm.models.cache import (
+            BatchKVCache,
             BatchRotatingKVCache,
             BufferedRotatingKVCache,
             KVCache,
@@ -14591,6 +14618,7 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
 
         cases = (
             ("KVCache", lambda: KVCache(), 1),
+            ("BatchKVCache", lambda: BatchKVCache(left_padding=[0, 1]), 2),
             ("RotatingKVCache", lambda: RotatingKVCache(max_size=8), 1),
             (
                 "BatchRotatingKVCache",
@@ -14609,18 +14637,181 @@ class TestKeyOnlyKVCacheGraph(unittest.TestCase):
                 long = run(make_cache(), batch, 256)
                 self.assertLessEqual(long, short + 2)
 
+    def test_batch_kv_guard_survives_merge_and_extract(self):
+        from mlx_vlm.models.cache import BatchKVCache, KVCache
+
+        decode_steps = (16, 256)
+
+        def check_decode(cache, batch):
+            counts = []
+            for steps in decode_steps:
+                for step in range(steps):
+                    keys = mx.full((batch, 1, 1, 4), step % 7, dtype=mx.float32)
+                    cached_keys, _ = cache.update_and_fetch(keys, keys[..., :0])
+                    mx.eval(cached_keys)
+                self.assertEqual(cache.values.shape[-1], 0)
+                counts.append(self._edges(cache.values))
+            self.assertLessEqual(counts[1], counts[0] + 2)
+
+        for lengths in ((0, 0), (3, 3), (0, 5), (3, 5)):
+            with self.subTest(lengths=lengths):
+                rows = []
+                for row, length in enumerate(lengths):
+                    cache = KVCache()
+                    if length:
+                        keys = mx.full((1, 1, length, 4), row + 1, dtype=mx.float32)
+                        cache.update_and_fetch(keys, keys[..., :0])
+                        mx.eval(cache.keys)
+                    rows.append(cache)
+
+                batch = KVCache.merge(rows)
+                self.assertIsInstance(batch, BatchKVCache)
+                self.assertEqual(batch.offset.tolist(), list(lengths))
+                self.assertEqual(
+                    batch.left_padding.tolist(),
+                    [max(lengths) - length for length in lengths],
+                )
+                check_decode(batch, len(lengths))
+                for row, length in enumerate(lengths):
+                    with self.subTest(row=row):
+                        extracted = batch.extract(row)
+                        self.assertIsInstance(extracted, KVCache)
+                        self.assertEqual(extracted.offset, length + sum(decode_steps))
+                        check_decode(extracted, 1)
+
     def test_normal_values_are_unaffected(self):
+        from mlx_vlm.models.cache import (
+            BatchKVCache,
+            BatchRotatingKVCache,
+            BufferedRotatingKVCache,
+            KVCache,
+            RotatingKVCache,
+        )
+
+        cases = (
+            ("KVCache", KVCache, 1),
+            ("RotatingKVCache", lambda: RotatingKVCache(max_size=8), 1),
+            ("BatchKVCache", lambda: BatchKVCache(left_padding=[0, 1]), 2),
+            (
+                "BatchRotatingKVCache",
+                lambda: BatchRotatingKVCache(max_size=8, left_padding=[0, 1]),
+                2,
+            ),
+            (
+                "BufferedRotatingKVCache",
+                lambda: BufferedRotatingKVCache(max_size=8, buffer_size=4),
+                1,
+            ),
+        )
+        for name, make_cache, batch in cases:
+            for dtype in (mx.float32, mx.float16):
+                for value_dim in (3, 4):
+                    with self.subTest(cache=name, dtype=dtype, value_dim=value_dim):
+                        cache, reference = make_cache(), make_cache()
+                        # The undecorated implementation is the expected behavior
+                        # when values are nonempty.
+                        reference_update = type(reference).update_and_fetch.__wrapped__
+                        for step, length in enumerate((3, 1, 4, 1, 2, 1) * 4):
+                            keys = (
+                                mx.arange(batch * length * 4, dtype=dtype).reshape(
+                                    batch, 1, length, 4
+                                )
+                                + step
+                            )
+                            values = (
+                                mx.arange(
+                                    batch * length * value_dim, dtype=dtype
+                                ).reshape(batch, 1, length, value_dim)
+                                + 1000
+                                + 10 * step
+                            )
+                            actual = cache.update_and_fetch(keys, values)
+                            expected = reference_update(reference, keys, values)
+                            mx.eval(actual, expected)
+                            for actual_array, expected_array in zip(actual, expected):
+                                self.assertTrue(
+                                    mx.array_equal(actual_array, expected_array).item()
+                                )
+                            self.assertEqual(actual[1].shape[-1], value_dim)
+                            self.assertTrue(
+                                mx.array_equal(cache.keys, reference.keys).item()
+                            )
+                            self.assertTrue(
+                                mx.array_equal(cache.values, reference.values).item()
+                            )
+
+    def test_apc_guard_with_unequal_prefix_lengths(self):
+        from mlx_vlm.apc import make_warm_batch_exact_cache_multi
         from mlx_vlm.models.cache import KVCache, RotatingKVCache
 
-        for make_cache in (lambda: KVCache(), lambda: RotatingKVCache(max_size=8)):
-            cache = make_cache()
-            for step in range(12):
-                k = mx.full((1, 1, 1, 4), step + 1, dtype=mx.float32)
-                v = mx.full((1, 1, 1, 4), step + 1, dtype=mx.float32)
-                _, cached_values = cache.update_and_fetch(k, v)
-                mx.eval(cached_values)
-            self.assertEqual(cache.values.shape[-1], 4)
-            self.assertGreater(float(cache.values.sum()), 0.0)
+        cases = (
+            ("kv", KVCache, None),
+            ("rotating", lambda: RotatingKVCache(max_size=8), 8),
+        )
+        for name, make_cache, window in cases:
+            for lengths in ((3, 5), (5, 3)):
+                with self.subTest(cache=name, lengths=lengths):
+                    rows, histories = [], []
+                    for row, length in enumerate(lengths):
+                        keys = mx.arange(length * 4, dtype=mx.float32).reshape(
+                            1, 1, length, 4
+                        ) + 100 * (row + 1)
+                        cache = make_cache()
+                        cache.update_and_fetch(keys, keys[..., :0])
+                        rows.append([cache])
+                        histories.append(keys)
+
+                    caches, prefix = make_warm_batch_exact_cache_multi(rows, lengths)
+                    self.assertIsNotNone(caches)
+                    self.assertEqual(prefix, max(lengths))
+                    cache = caches[0]
+                    self.assertEqual(cache.offset.tolist(), list(lengths))
+                    self.assertEqual(cache._idx, prefix)
+                    self.assertEqual(
+                        cache.left_padding.tolist(),
+                        [prefix - length for length in lengths],
+                    )
+                    for row, keys in enumerate(histories):
+                        expected = mx.pad(
+                            keys,
+                            [(0, 0), (0, 0), (prefix - lengths[row], 0), (0, 0)],
+                        )
+                        self.assertTrue(
+                            mx.array_equal(cache.keys[row : row + 1], expected).item()
+                        )
+
+                    counts = []
+                    decoded = 0
+                    for steps in (16, 256):
+                        for step in range(steps):
+                            keys = mx.arange(8, dtype=mx.float32).reshape(2, 1, 1, 4)
+                            keys = keys + 1000 + 10 * (decoded + step)
+                            cached_keys, _ = cache.update_and_fetch(keys, keys[..., :0])
+                            mx.eval(cached_keys)
+                            for row in range(2):
+                                histories[row] = mx.concatenate(
+                                    [histories[row], keys[row : row + 1]], axis=2
+                                )
+                        decoded += steps
+                        counts.append(self._edges(cache.values))
+                        self.assertEqual(cache.values.shape[-1], 0)
+                        self.assertEqual(
+                            cache.offset.tolist(),
+                            [length + decoded for length in lengths],
+                        )
+                        for row, history in enumerate(histories):
+                            extracted = cache.extract(row)
+                            expected = (
+                                history if window is None else history[..., -window:, :]
+                            )
+                            self.assertEqual(extracted.offset, lengths[row] + decoded)
+                            self.assertTrue(
+                                mx.array_equal(extracted.keys, expected).item()
+                            )
+                            self.assertEqual(
+                                extracted.values.shape, (*expected.shape[:-1], 0)
+                            )
+                    self.assertLessEqual(counts[1], counts[0] + 2)
 
     def test_guard_survives_merge_extract_and_apc(self):
         from mlx_vlm.apc import _merge_exact_cache_entries

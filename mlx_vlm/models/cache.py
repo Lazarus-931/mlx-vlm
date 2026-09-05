@@ -1,3 +1,4 @@
+from functools import wraps
 from typing import Any, Dict, List, Optional, Tuple
 
 import mlx.core as mx
@@ -15,6 +16,7 @@ def _drop_key_only_values(cache, cached_keys, cached_values, incoming_values):
 def _key_only_guard(cls):
     inner = cls.update_and_fetch
 
+    @wraps(inner)
     def update_and_fetch(self, keys, values):
         cached_keys, cached_values = inner(self, keys, values)
         return _drop_key_only_values(self, cached_keys, cached_values, values)
