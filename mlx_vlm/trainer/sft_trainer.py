@@ -442,11 +442,15 @@ def evaluate(
         ntokens += ntoks
         mx.eval(all_losses, ntokens)
 
-    all_losses = mx.distributed.all_sum(all_losses, stream=mx.cpu)
-    ntokens = mx.distributed.all_sum(ntokens, stream=mx.cpu)
+    # Reduce on the CPU stream so a slow ring peer can't stall a Metal command
+    # buffer past the GPU watchdog (#2179).
+    with mx.stream(mx.cpu):
+        all_losses = mx.distributed.all_sum(all_losses)
+        ntokens = mx.distributed.all_sum(ntokens)
+        loss = (all_losses / mx.maximum(ntokens, 1)).item()
 
     mx.clear_cache()
-    return (all_losses / mx.maximum(ntokens, 1)).item()
+    return loss
 
 
 def train(
@@ -521,7 +525,12 @@ def train(
             grad = tree_map(lambda x, y: x + y, grad, prev_grad)
 
         if do_update:
-            grad = average_gradients(grad)
+            # Average grads on the CPU stream and materialize before the
+            # optimizer, so a slow ring peer can't stall a Metal command buffer
+            # past the GPU watchdog (#2179).
+            with mx.stream(mx.cpu):
+                grad = average_gradients(grad)
+            mx.eval(grad)
             if grad_accum_steps > 1:
                 grad = tree_map(lambda x: x / grad_accum_steps, grad)
             optimizer.update(model, grad)
