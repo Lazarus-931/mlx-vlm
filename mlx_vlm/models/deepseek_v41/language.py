@@ -672,7 +672,12 @@ class DeepseekV41Attention(nn.Module):
                 )
         if out is None:
             mask = window_mask
-            kv = window_kv[:, None]
+            # The window cache is float32 while queries are the model dtype, and
+            # mixed dtypes drop this call off the fused attention path: measured
+            # 79 ms against 0.1 ms for one decode step's call. The cast is
+            # lossless because the cache holds fake-quantized fp8 values, whose
+            # mantissa and exponent both fit the narrower type.
+            kv = window_kv[:, None].astype(q.dtype)
             out = mx.fast.scaled_dot_product_attention(
                 q,
                 kv,
