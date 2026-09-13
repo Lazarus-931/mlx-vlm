@@ -286,10 +286,23 @@ class QuantizedEngramEmbedding(nn.Module):
         self.biases = mx.zeros((num_embeddings, dims // group_size), dtype=scale_dtype)
 
     def __call__(self, indices: mx.array) -> mx.array:
+        """Look up rows and dequantize them.
+
+        The gather runs on the CPU stream because the tables are mapped rather
+        than resident: a row lookup can fault pages in from the file, and doing
+        that inside a Metal command buffer lets the page-in outrun the GPU
+        watchdog, killing the whole buffer. The rows are tiny, so the copy
+        costs nothing next to the fault it avoids.
+        """
+        with mx.stream(mx.cpu):
+            rows = self.weight[indices]
+            scales = self.scales[indices]
+            biases = self.biases[indices]
+            mx.eval(rows, scales, biases)
         return mx.dequantize(
-            self.weight[indices],
-            scales=self.scales[indices],
-            biases=self.biases[indices],
+            rows,
+            scales=scales,
+            biases=biases,
             group_size=self.group_size,
             bits=self.bits,
         ).astype(mx.float32)

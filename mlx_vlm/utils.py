@@ -839,10 +839,17 @@ def _materialize_parameters(model, budget_bytes: int = 2 << 30) -> None:
     command buffer; on Apple silicon the cold page-ins inside it can outrun
     Metal's watchdog, which surfaces as a GPU timeout or takes the machine
     down. Materializing in slices keeps each buffer short.
+
+    Paths matching the model's ``lazy_parameter_paths`` are skipped and left
+    mapped. Those are tables a step gathers a handful of rows from, so making
+    them resident buys nothing and costs their full size in memory.
     """
+    lazy_markers = tuple(getattr(model, "lazy_parameter_paths", ()) or ())
     group, used = [], 0
-    for _, value in tree_flatten(model.parameters()):
+    for path, value in tree_flatten(model.parameters()):
         if not isinstance(value, mx.array):
+            continue
+        if any(marker in path for marker in lazy_markers):
             continue
         group.append(value)
         used += value.nbytes
