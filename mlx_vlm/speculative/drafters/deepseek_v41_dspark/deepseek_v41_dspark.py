@@ -274,9 +274,16 @@ class DeepseekV41DsparkDraftModel(nn.Module):
         return self
 
     def make_cache(self) -> List[RotatingKVCache]:
+        """Window KV rings sized as the release does.
+
+        The release sizes the DSpark ring at ``args.window_size`` and masks to
+        ``min(window_size, start_pos + 1)``; a wider ring would rotate target
+        hiddens in at positions the head never saw in training.
+        """
         from ....models.cache import RotatingKVCache as _RotCache
 
-        return [_RotCache(max_size=512) for _ in self.stages]
+        window = int(self.config.draft_window_size or 0) or 512
+        return [_RotCache(max_size=window) for _ in self.stages]
 
     def reset(self, target_model) -> List[RotatingKVCache]:
         self.bind(target_model)

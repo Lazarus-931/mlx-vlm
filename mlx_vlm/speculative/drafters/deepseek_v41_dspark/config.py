@@ -22,13 +22,16 @@ class DeepseekV41DsparkConfig(BaseModelConfig):
     draft layers for DeepSeek-V4.1 blocks (MLA cross-attention, MoE,
     single-pass Hyper-Connections). Field names mirror ``DSparkConfig`` so the
     shared ``dflash`` dispatch and proposal code apply unchanged.
+
+    ``runtime_block_size`` defaults to a single proposal: exact verification
+    pays for each retained attention window, and a wider default spends most of
+    that work on rejected tails. An explicit width still takes precedence.
     """
 
     model_type: str = "deepseek_v41_dspark"
     text_config: Optional[TextConfig] = None
     n_mtp_layers: int = 3
 
-    # DSpark / dflash proposal contract (mirrors DSparkConfig)
     target_layer_ids: List[int] = field(default_factory=list)
     mask_token_id: int = -1
     markov_rank: int = 256
@@ -47,9 +50,6 @@ class DeepseekV41DsparkConfig(BaseModelConfig):
         if not self.block_size:
             self.block_size = self.proposal_length + 1
         if self.runtime_block_size is None:
-            # Exact verification pays for each retained attention window. A
-            # single proposal avoids spending most of that work on rejected
-            # tails; an explicit runtime width still takes precedence.
             self.runtime_block_size = min(2, self.block_size)
 
     def _sync_from_text_config(self):
@@ -68,6 +68,8 @@ class DeepseekV41DsparkConfig(BaseModelConfig):
             block = int(getattr(text, "dspark_block_size", 0) or 0)
             if block:
                 self.block_size = block + 1
+        if self.draft_window_size is None:
+            self.draft_window_size = int(getattr(text, "sliding_window", 0) or 0)
 
     @property
     def proposal_length(self) -> int:
