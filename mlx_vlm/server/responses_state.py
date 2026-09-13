@@ -188,12 +188,18 @@ class HarmonyStreamState:
         "<|ghissue|>",
     )
 
-    def __init__(self, starts_in_thinking=False):
+    def __init__(self, starts_in_thinking=False, open_channel=None):
         self.buffer = ""
         self.header = ""
-        self.in_header = not starts_in_thinking
+        if open_channel:
+            # The prompt already named a channel and opened its message, so
+            # generation starts inside the body rather than in a header.
+            self.in_header = False
+            self.channel = open_channel
+        else:
+            self.in_header = not starts_in_thinking
+            self.channel = "analysis" if starts_in_thinking else None
         self.reading_channel = False
-        self.channel = "analysis" if starts_in_thinking else None
 
     def feed(self, text, last=False):
         self.buffer += text or ""
@@ -303,9 +309,10 @@ def make_response_stream_state(
     enable_thinking: bool = False,
     thinking_start_token: Optional[str] = None,
     thinking_end_token: Optional[str] = None,
+    open_channel: Optional[str] = None,
 ):
     if _uses_harmony_template(processor):
-        return HarmonyStreamState(enable_thinking)
+        return HarmonyStreamState(enable_thinking, open_channel)
     tokenizer = _response_template_tokenizer(processor)
     if tokenizer is not None and hasattr(tokenizer, "get_response_parser"):
         try:
@@ -319,6 +326,27 @@ def make_response_stream_state(
         thinking_start_token,
         thinking_end_token,
     )
+
+
+_OPEN_CHANNEL = re.compile(r"<\|channel\|>(\w+)<\|message\|>\s*$")
+
+
+def prompt_open_channel(prompt: Any) -> Optional[str]:
+    """The Harmony channel a prompt leaves open for generation to continue.
+
+    A template that completes its own header ends the prompt inside a message
+    body, so a parser that assumes header mode would read the answer as header
+    text and discard it.
+    """
+    if not isinstance(prompt, str):
+        return None
+    stripped = prompt.rstrip()
+    match = _OPEN_CHANNEL.search(stripped)
+    if match:
+        return match.group(1)
+    if stripped.endswith("<|message|>"):
+        return "final"
+    return None
 
 
 def prompt_has_open_thinking(
@@ -445,12 +473,15 @@ def _split_thinking(
     thinking_end_token: Optional[str] = None,
     starts_in_thinking: bool = False,
     processor=None,
+    open_channel: Optional[str] = None,
 ) -> Tuple[Optional[str], str]:
     if not text:
         return None, text
 
     if _uses_harmony_template(processor):
-        parsed = HarmonyStreamState(starts_in_thinking).feed(text, last=True)
+        parsed = HarmonyStreamState(starts_in_thinking, open_channel).feed(
+            text, last=True
+        )
         return parsed.reasoning, parsed.content or ""
 
     tokenizer = _response_template_tokenizer(processor)
@@ -513,12 +544,14 @@ def _response_output_items_from_text(
     thinking_end_token: Optional[str] = None,
     reasoning_item_id: Optional[str] = None,
     processor=None,
+    open_channel: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], str, Optional[str], str]:
     reasoning, content = _split_thinking(
         full_text,
         thinking_start_token,
         thinking_end_token,
         processor=processor,
+        open_channel=open_channel,
     )
     reasoning_items = _reasoning_output_items(reasoning, reasoning_item_id)
     if tool_module is not None and chat_tools:

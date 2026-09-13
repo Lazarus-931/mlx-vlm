@@ -48,6 +48,7 @@ from .responses_state import (
     _store_response,
     make_response_stream_state,
     prompt_has_open_thinking,
+    prompt_open_channel,
     response_store,
     response_store_lock,
 )
@@ -850,6 +851,7 @@ async def responses_endpoint(request: Request):
                         ),
                         gen_args.thinking_start_token,
                         gen_args.thinking_end_token,
+                        open_channel=prompt_open_channel(formatted_prompt),
                     )
                     reasoning_item_id = f"rs_{uuid.uuid4().hex}"
                     streamed_reasoning = ""
@@ -980,6 +982,7 @@ async def responses_endpoint(request: Request):
                             gen_args.thinking_end_token,
                             reasoning_item_id,
                             processor=processor,
+                            open_channel=prompt_open_channel(formatted_prompt),
                         )
                     )
                     tool_output_items = [
@@ -1243,6 +1246,7 @@ async def responses_endpoint(request: Request):
                         gen_args.thinking_start_token,
                         gen_args.thinking_end_token,
                         processor=processor,
+                        open_channel=prompt_open_channel(formatted_prompt),
                     )
                 )
                 if output_finish_reason == "tool_calls":
@@ -1459,6 +1463,7 @@ async def chat_completions_endpoint(request: ChatRequest, http_request: Request)
                             ),
                             gen_args.thinking_start_token,
                             gen_args.thinking_end_token,
+                            open_channel=prompt_open_channel(formatted_prompt),
                         )
                         full_output = ""  # raw output for tool call parsing
                         # Track tool-call state to suppress markup from content
@@ -1612,6 +1617,7 @@ async def chat_completions_endpoint(request: ChatRequest, http_request: Request)
                             ),
                             gen_args.thinking_start_token,
                             gen_args.thinking_end_token,
+                            open_channel=prompt_open_channel(formatted_prompt),
                         )
                         for chunk in token_iterator:
                             if chunk is None or not hasattr(chunk, "text"):
@@ -1856,6 +1862,7 @@ async def chat_completions_endpoint(request: ChatRequest, http_request: Request)
                         gen_args.thinking_end_token,
                     ),
                     processor=processor,
+                    open_channel=prompt_open_channel(formatted_prompt),
                 )
 
                 # Count raw generated tokens minus thinking tag tokens

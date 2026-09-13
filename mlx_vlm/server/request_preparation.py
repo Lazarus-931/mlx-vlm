@@ -207,22 +207,39 @@ def normalize_chat_input(request) -> PromptInput:
         if isinstance(message.content, str):
             msg["content"] = message.content
         elif isinstance(message.content, list):
+            content_parts = []
+            saw_media = False
             if message.role == "user":
                 for item in message.content:
                     if not isinstance(item, dict):
                         continue
                     item_type = item.get("type")
+                    if item_type in ("text", "input_text"):
+                        text = item.get("text", "") or item.get("content", "")
+                        if text:
+                            content_parts.append({"type": "text", "text": text})
+                        continue
                     if item_type == "input_image":
                         images.append(item["image_url"])
                     elif item_type == "image_url":
                         images.append(item["image_url"]["url"])
                     elif item_type == "input_audio":
                         audio.append(_decode_input_audio_data(item["input_audio"]))
+                        continue
                     elif item_type in ("input_video", "video_url", "video"):
                         video = _extract_video_reference(item)
                         if video:
                             videos.append(video)
-            msg["content"] = extract_text_from_content(message.content)
+                        continue
+                    else:
+                        continue
+                    # Mark where the image sat so later turns cannot claim it.
+                    content_parts.append({"type": "image"})
+                    saw_media = True
+            if saw_media:
+                msg["content"] = content_parts
+            else:
+                msg["content"] = extract_text_from_content(message.content)
         else:
             msg["content"] = message.content
 
@@ -240,7 +257,10 @@ def normalize_chat_input(request) -> PromptInput:
                         try:
                             fn["arguments"] = json.loads(args)
                         except (json.JSONDecodeError, TypeError):
-                            fn["arguments"] = {}
+                            # Native shell and apply_patch calls carry raw text
+                            # rather than JSON. Keep it: replacing it loses the
+                            # edit the tool result refers to.
+                            pass
                     tc["function"] = fn
                 normalized_calls.append(tc)
             msg["tool_calls"] = normalized_calls
