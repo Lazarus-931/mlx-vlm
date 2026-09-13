@@ -20809,6 +20809,35 @@ class TestDeepseekV41Engram(unittest.TestCase):
             engram_compressed_vocab_size=7,
         )
 
+    def _model_with_engram(self):
+        from mlx_vlm.models.deepseek_v41 import engram as engram_mod
+        from mlx_vlm.models.deepseek_v41.language import LanguageModel
+
+        config = self._config()
+        model = LanguageModel(config)
+        layout = engram_mod.EngramLayout.from_config(config)
+        token_map = [i % 7 for i in range(config.vocab_size)]
+        token_map[0] = 6
+        model.engram_hash = engram_mod.NgramHashState(
+            config, layout, token_map=token_map
+        )
+        return model
+
+    def test_reset_caches_clears_the_engram_hash_state(self):
+        """A generation must not inherit the previous one's token history.
+
+        The hash state keeps a token history across the prefill/decode split,
+        and at start_pos 0 it preserves any tail longer than the new prompt.
+        Leaving it behind made a generation depend on the one before it.
+        """
+        import mlx.core as mx
+
+        model = self._model_with_engram()
+        model.engram_hash(mx.array([[1, 2, 3, 4, 5, 6]]), 0)
+        self.assertIsNotNone(model.engram_hash._cache)
+        model._reset_caches()
+        self.assertIsNone(model.engram_hash._cache)
+
     def test_deepseek_v41_engram_layers_are_invoked(self):
         from mlx_vlm.models.deepseek_v41 import engram as engram_mod
         from mlx_vlm.models.deepseek_v41.language import LanguageModel

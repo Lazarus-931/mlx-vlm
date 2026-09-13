@@ -1103,6 +1103,15 @@ class LanguageModel(nn.Module):
             self.engram_hash._cache = self.engram_hash._cache[:, :offset]
 
     def _reset_caches(self):
+        """Drop every per-generation buffer that lives on a module.
+
+        The engram hash state is one of them: it keeps a token history across
+        the prefill/decode split, and at ``start_pos == 0`` it preserves any
+        tail longer than the new prompt. Leaving it in place makes a generation
+        depend on the one before it.
+        """
+        if self.engram_hash is not None:
+            self.engram_hash._cache = None
         for layer in self.layers:
             layer.attn._window_cache = None
             layer.attn._compress_cache = None
