@@ -3321,6 +3321,88 @@ class TestModels(unittest.TestCase):
             (config.n_routed_experts, 16, 4),
         )
 
+    def test_deepseek_v4_sanitize_keeps_embedding_scales_and_hc_head(self):
+        """Both checkpoint spellings of these keys must reach the model.
+
+        ``normalize_checkpoint_key`` strips the leading ``model.`` from every
+        key, so the Transformers spelling arrives bare and has to be put back;
+        the official checkpoint writes the hyper-connection head with
+        underscores instead. Dropping either leaves ``hc_head`` zeroed, and it
+        collapses the hyper-connection copies into the final hidden state.
+        """
+        from mlx_vlm.models import deepseek_v4
+
+        config = deepseek_v4.ModelConfig(
+            model_type="deepseek_v4",
+            vocab_size=32,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=1,
+            q_lora_rank=16,
+            o_lora_rank=8,
+            o_groups=2,
+            head_dim=8,
+            qk_rope_head_dim=4,
+            sliding_window=16,
+            compress_ratios=[0],
+            index_n_heads=4,
+            index_head_dim=8,
+            index_topk=4,
+            moe_intermediate_size=16,
+            n_routed_experts=4,
+            n_shared_experts=1,
+            num_experts_per_tok=2,
+            hc_mult=2,
+        )
+        model = deepseek_v4.Model(config)
+        hc = {
+            "base": mx.arange(2 * 32, dtype=mx.float32).reshape(2, 32),
+            "fn": mx.ones((2, 32), dtype=mx.float32),
+            "scale": mx.full((1,), 0.5, dtype=mx.float32),
+        }
+        layouts = {
+            "transformers": (
+                {
+                    "model.embed_tokens.scales": mx.ones((32, 2), dtype=mx.bfloat16),
+                    "model.embed_tokens.biases": mx.zeros((32, 2), dtype=mx.bfloat16),
+                    "model.hc_head.base": hc["base"],
+                    "model.hc_head.fn": hc["fn"],
+                    "model.hc_head.scale": hc["scale"],
+                },
+                (
+                    "language_model.model.embed_tokens.scales",
+                    "language_model.model.embed_tokens.biases",
+                    "language_model.model.hc_head.base",
+                    "language_model.model.hc_head.fn",
+                    "language_model.model.hc_head.scale",
+                ),
+            ),
+            "official": (
+                {
+                    "hc_head_base": hc["base"],
+                    "hc_head_fn": hc["fn"],
+                    "hc_head_scale": hc["scale"],
+                },
+                (
+                    "language_model.model.hc_head.base",
+                    "language_model.model.hc_head.fn",
+                    "language_model.model.hc_head.scale",
+                ),
+            ),
+        }
+        for name, (weights, expected) in layouts.items():
+            with self.subTest(layout=name):
+                sanitized = model.sanitize(dict(weights))
+                for key in expected:
+                    self.assertIn(key, sanitized)
+                self.assertTrue(
+                    mx.array_equal(
+                        sanitized["language_model.model.hc_head.base"], hc["base"]
+                    )
+                )
+
     def test_deepseek_v4_quantization_path_aliases(self):
         from mlx_vlm.models import deepseek_v4
 
