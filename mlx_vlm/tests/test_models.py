@@ -1304,3 +1304,38 @@ class TestMoondream3Sanitize(unittest.TestCase):
         )
         self.assertIn("text.model.blocks.0.attn.qkv.weight", sanitized)
         self.assertIn("vision.encoder.blocks.0.ln1.weight", sanitized)
+
+
+class TestLayaDecisionModel(unittest.TestCase):
+    def test_padding_does_not_change_option_logits(self):
+        from mlx_vlm.models.laya.laya import DecisionModel
+
+        config = {
+            "model_type": "modernbert",
+            "vocab_size": 32,
+            "hidden_size": 64,
+            "num_hidden_layers": 2,
+            "intermediate_size": 128,
+            "num_attention_heads": 1,
+            "local_attention": 16,
+            "global_attn_every_n_layers": 2,
+        }
+        model = DecisionModel(config, head_layers=1)
+        model.eval()
+        single, _ = model(
+            mx.array([[1, 2, 3]]),
+            mx.array([[1, 1, 1]]),
+            mx.array([[1, 2]]),
+            mx.array([[True, True]]),
+            mx.array([0]),
+        )
+        batch, _ = model(
+            mx.array([[1, 2, 3, 0, 0], [1, 4, 5, 6, 7]]),
+            mx.array([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]]),
+            mx.array([[1, 2], [2, 3]]),
+            mx.array([[True, True], [True, True]]),
+            mx.array([0, 2]),
+        )
+        np.testing.assert_allclose(
+            np.asarray(single[0]), np.asarray(batch[0]), atol=2e-5
+        )
