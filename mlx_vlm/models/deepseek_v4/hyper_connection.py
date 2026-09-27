@@ -9,6 +9,8 @@ from ..fast_ops import exact_hc_expand, exact_hc_norm, exact_hc_normalized_norm
 from ..linear import DECODE_BLOCK_SIZE, tiled_linear, tokenwise
 from ..switch_layers import MoE
 
+HC_MATVEC_MAX_ROWS = 32
+
 
 def _make_hc_sinkhorn_collapse_kernel():
     """Fused sinkhorn + collapse: eliminates one dispatch per HC cycle.
@@ -264,6 +266,18 @@ class HyperConnection(nn.Module):
         return hc_expand(output, x, post, comb, use_kernel=not self.training)
 
     def _mix(self, z):
+        rows = z.shape[0] * z.shape[1]
+        if (
+            z.shape[0] > 1
+            and rows <= HC_MATVEC_MAX_ROWS
+            and not self.training
+            and z.shape[1] <= DECODE_BLOCK_SIZE
+        ):
+            return (
+                (self.fn @ z.reshape(rows, z.shape[-1])[..., None])
+                .squeeze(-1)
+                .reshape(z.shape[0], z.shape[1], -1)
+            )
         if z.shape[1] <= DECODE_BLOCK_SIZE:
             if z.shape[0] == 1 and z.shape[1] > 1 and not self.training:
                 return tokenwise(lambda part: part @ self.fn.T, z)
