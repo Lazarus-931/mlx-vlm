@@ -3735,6 +3735,69 @@ def test_tool_stream_finalization(chunks, start_marker, end_marker, expected, in
 
 _CALL = '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
 
+# A model can end its turn after a complete call without emitting the closing
+# marker; every parser with an end marker can be left open this way. Observed
+# on Qwen3-8B-4bit once a realistic tool set is advertised.
+_UNTERMINATED_JSON_CALL = (
+    "<tool_call>\n\n"
+    '{"name": "mcp__filesystem__list_allowed_directories", "arguments": {}}'
+)
+_UNTERMINATED_XML_CALL = (
+    "<tool_call>\n<function=get_weather>\n"
+    "<parameter=city>\nParis\n</parameter>\n</function>"
+)
+
+
+def test_unterminated_tool_call_is_recovered():
+    module = load_tool_module("json_tools")
+    parsed = process_tool_calls(_UNTERMINATED_JSON_CALL, module, None)
+    assert [call["function"]["name"] for call in parsed.calls] == [
+        "mcp__filesystem__list_allowed_directories"
+    ]
+    assert parsed.calls[0]["function"]["arguments"] == "{}"
+    assert parsed.remaining_text == ""
+
+
+def test_unterminated_tool_call_keeps_preceding_text():
+    module = load_tool_module("json_tools")
+    parsed = process_tool_calls(f"Checking.{_UNTERMINATED_JSON_CALL}", module, None)
+    assert len(parsed.calls) == 1
+    assert parsed.remaining_text == "Checking."
+
+
+def test_unterminated_tool_call_follows_a_closed_one():
+    module = load_tool_module("json_tools")
+    parsed = process_tool_calls(f"{_CALL}\n{_UNTERMINATED_JSON_CALL}", module, None)
+    assert [call["function"]["name"] for call in parsed.calls] == [
+        "get_weather",
+        "mcp__filesystem__list_allowed_directories",
+    ]
+    assert [call["index"] for call in parsed.calls] == [0, 1]
+    assert parsed.remaining_text == ""
+
+
+def test_unterminated_recovery_is_not_format_specific():
+    module = load_tool_module("qwen3_coder")
+    parsed = process_tool_calls(_UNTERMINATED_XML_CALL, module, None)
+    assert [call["function"]["name"] for call in parsed.calls] == ["get_weather"]
+    assert parsed.remaining_text == ""
+
+
+@pytest.mark.parametrize(
+    "text", ["<tool_call>unfinished", '<tool_call>{"name": ', "<tool_call>"]
+)
+def test_unparseable_open_span_stays_content(text):
+    module = load_tool_module("json_tools")
+    parsed = process_tool_calls(text, module, None)
+    assert parsed.calls == []
+    assert parsed.remaining_text == text
+
+
+def test_newline_terminated_parser_has_no_open_span():
+    module = load_tool_module("mistral")
+    parsed = process_tool_calls('[TOOL_CALLS]foo[ARGS]{"a": 1}', module, None)
+    assert [call["function"]["name"] for call in parsed.calls] == ["foo"]
+
 
 @pytest.mark.parametrize(
     "parser,text",
@@ -3746,6 +3809,10 @@ _CALL = '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
         ("json_tools", f"A{_CALL}\nB<tool_call>unfinished"),
         ("json_tools", "A <tool_call>unfinished"),
         ("json_tools", "No calls\n\n"),
+        ("json_tools", _UNTERMINATED_JSON_CALL),
+        ("json_tools", f"Checking.{_UNTERMINATED_JSON_CALL}"),
+        ("json_tools", f"{_CALL}\n{_UNTERMINATED_JSON_CALL}"),
+        ("qwen3_coder", _UNTERMINATED_XML_CALL),
         ("minicpm5", '<function name="get_time"></function>Use <function as a prefix.'),
         ("mistral", 'Before [TOOL_CALLS]foo[ARGS]{"a": 1}\nAfter'),
         ("mistral", "[TOOL_CALLS]foo[ARGS]{}\n[TOOL_CALLS]bar[ARGS]{}"),
@@ -3763,7 +3830,9 @@ def test_tool_stream_matches_non_streamed_content(parser, text):
         else text.strip()
     )
     for chunks in ([text], list(text)):
-        state = ToolCallStreamState(module.tool_call_start, module.tool_call_end)
+        state = ToolCallStreamState(
+            module.tool_call_start, module.tool_call_end, module
+        )
         streamed = "".join(
             state.feed(chunk, last=i == len(chunks) - 1) or ""
             for i, chunk in enumerate(chunks)

@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 from ..prompt_utils import _normalize_tool_message
-from ..tools import process_tool_calls
+from ..tools import ToolParser, parse_unterminated_call, process_tool_calls
 
 logger = logging.getLogger("mlx_vlm.server")
 
@@ -293,9 +293,11 @@ class ToolCallStreamState:
         self,
         tc_start: Optional[str],
         tc_end: Optional[str],
+        tool_module: Optional[ToolParser] = None,
     ):
         self.tc_start = tc_start or ""
         self.tc_end = tc_end or ""
+        self.tool_module = tool_module
         self.in_tool_call = False
         self.buffer = ""
         self.call_text = ""
@@ -345,13 +347,16 @@ class ToolCallStreamState:
         if last:
             if self.in_tool_call:
                 if self.tc_end:
-                    # No end marker arrived, so the extractor finds no call and
-                    # keeps this text as content. Beside a parsed call the
-                    # non-streamed response strips its marker.
+                    # No end marker arrived. The extractor recovers the call
+                    # when the open span parses; otherwise it keeps the text
+                    # as content, and beside a parsed call strips its marker.
                     text = self.call_text + self.buffer
-                    if self.closed_call and _is_whole_tag(self.tc_start):
-                        text = text.removeprefix(self.tc_start)
-                    self._show(text, visible)
+                    if self._recovers_open_call(text):
+                        self.pending_space += " "
+                    else:
+                        if self.closed_call and _is_whole_tag(self.tc_start):
+                            text = text.removeprefix(self.tc_start)
+                        self._show(text, visible)
             elif self.buffer:
                 # An unfinished start-marker prefix is ordinary content when
                 # generation ends before the marker can complete.
@@ -368,6 +373,12 @@ class ToolCallStreamState:
         if self.finished:
             return None
         return self.feed(None, last=True)
+
+    def _recovers_open_call(self, text: str) -> bool:
+        """Whether the extractor will turn this open span into a call."""
+        if self.tool_module is None:
+            return False
+        return parse_unterminated_call(text, self.tool_module, None) is not None
 
     def _show(self, text: str, visible: list) -> None:
         text = self.pending_space + text

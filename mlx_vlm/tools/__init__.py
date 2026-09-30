@@ -10,7 +10,7 @@ nothing here depends on a server.
 """
 
 from .base import ToolParser
-from .extractor import process_tool_calls
+from .extractor import parse_unterminated_call, process_tool_calls
 from .policy import _prepare_chat_tool_choice
 from .registry import (
     SPECS,
@@ -26,6 +26,7 @@ __all__ = [
     "ParserSpec",
     "SPECS",
     "ToolParser",
+    "parse_unterminated_call",
     "process_tool_calls",
     "load_tool_module",
     "_infer_tool_parser",

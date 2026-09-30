@@ -1017,7 +1017,7 @@ async def responses_endpoint(request: Request):
                         if tool_module is not None and chat_tools
                         else None
                     )
-                    tool_call_state = ToolCallStreamState(tc_start, tc_end)
+                    tool_call_state = ToolCallStreamState(tc_start, tc_end, tool_module)
                     thinking_state = make_response_stream_state(
                         processor,
                         prompt_has_open_thinking(
@@ -1765,7 +1765,9 @@ async def chat_completions_endpoint(request: ChatRequest, http_request: Request)
                         # Track tool-call state to suppress markup from content
                         tc_start = tool_module.tool_call_start if tool_module else None
                         tc_end = tool_module.tool_call_end if tool_module else None
-                        tool_call_state = ToolCallStreamState(tc_start, tc_end)
+                        tool_call_state = ToolCallStreamState(
+                            tc_start, tc_end, tool_module
+                        )
 
                         def _next_token():
                             try:
@@ -1940,6 +1942,7 @@ async def chat_completions_endpoint(request: ChatRequest, http_request: Request)
                         tool_call_state = ToolCallStreamState(
                             tool_module.tool_call_start if tool_module else None,
                             tool_module.tool_call_end if tool_module else None,
+                            tool_module,
                         )
                         for chunk in token_iterator:
                             if chunk is None or not hasattr(chunk, "text"):

@@ -584,7 +584,7 @@ async def anthropic_messages_endpoint(http_request: Request):
                     tool_module.tool_call_start if tool_module and tools else None
                 )
                 tc_end = tool_module.tool_call_end if tool_module and tools else None
-                tool_call_state = ToolCallStreamState(tc_start, tc_end)
+                tool_call_state = ToolCallStreamState(tc_start, tc_end, tool_module)
                 message_started = False
 
                 def close_open_block():
