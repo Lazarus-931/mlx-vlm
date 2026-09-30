@@ -2002,3 +2002,80 @@ class TestSAM3DObjects(unittest.TestCase):
                     "f 1 2 3",
                 ],
             )
+
+
+def test_gliner_span_checkpoint_keeps_classification_weights():
+    config = GlinerConfig.from_dict(
+        {
+            "architecture": "span",
+            "encoder_config": {
+                "vocab_size": 16,
+                "hidden_size": 8,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "intermediate_size": 16,
+                "position_buckets": 4,
+                "max_relative_positions": -1,
+                "max_position_embeddings": 8,
+            },
+        }
+    )
+    model = GlinerModel(config)
+    expected = dict(tree_flatten(model.parameters()))
+    source = {}
+    for key, value in expected.items():
+        key = key.replace("encoder.encoder.layers.", "encoder.encoder.layer.")
+        key = key.replace(".attention.self_attn.", ".attention.self.")
+        key = key.replace(".layer_norm.", ".LayerNorm.")
+        key = key.replace("classifier.3.", "classifier.2.")
+        source[key] = value
+    source.update(
+        {
+            key: mx.zeros((1,))
+            for key in ("span_rep.unused", "count_embed.unused", "count_pred.unused")
+        }
+    )
+    weights = model.sanitize(source)
+    assert weights.keys() == expected.keys()
+    model.load_weights(list(weights.items()), strict=True)
+    again = model.sanitize(weights)
+    for key, value in expected.items():
+        assert mx.array_equal(again[key], value).item()
+    assert model.encoder.encoder.max_relative_positions == 8
+    with pytest.raises(ValueError, match="classification only"):
+        model.extract(None, None, None, None)
+
+
+def test_gliner_decisions_preserve_choice_and_multilabel_scoring():
+    from mlx_vlm import predict
+
+    calls = []
+    model = SimpleNamespace(
+        config=SimpleNamespace(architecture="span", model_type="gliner2_5"),
+        decision_types=("choice", "multi_label"),
+        _prepare=lambda *args: SimpleNamespace(
+            input_ids=mx.array([[0]]), marker_positions=[0, 1, 2, 3, 4, 5]
+        ),
+        encode=lambda ids: calls.append(ids)
+        or mx.array([[[0.0], [2.0], [-1.0], [0.0], [2.0], [-1.0]]]),
+        classify=lambda states: states[..., 0],
+    )
+    model.classify_text = lambda *args, **kwargs: GlinerModel.classify_text(
+        model, *args, **kwargs
+    )
+    model.predict = lambda *args, **kwargs: GlinerModel.predict(model, *args, **kwargs)
+    result = predict(
+        model,
+        None,
+        "example",
+        {
+            "route": {"type": "choice", "criteria": ["A", "B"]},
+            "tags": {"type": "multi_label", "criteria": ["A", "B"], "threshold": 0.9},
+        },
+    )["answers"]
+    assert len(calls) == 1
+    assert result["route"]["value"] == "A"
+    assert abs(sum(result["route"]["probabilities"].values()) - 1) < 1e-6
+    assert result["tags"]["value"] == ["A"]
+    assert abs(result["tags"]["scores"]["A"] - mx.sigmoid(mx.array(2.0)).item()) < 1e-6
+    assert "probabilities" not in result["tags"]

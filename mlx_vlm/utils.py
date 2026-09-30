@@ -759,7 +759,7 @@ def get_model_and_args(config: dict, model_path: Optional[Path] = None):
     dflash_config = config.get("dflash_config")
     if "Lfm2BidirectionalForMaskedLM" in architectures:
         model_type = "lfm2_encoder"
-    elif "BoundaryExtractor" in architectures:
+    elif architectures.intersection({"BoundaryExtractor", "SpanExtractor"}):
         model_type = "gliner2_5"
     elif "DFlash2DraftModel" in architectures:
         model_type = "dflash2"
@@ -1419,7 +1419,9 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     # GLiNER2.5 ships its encoder config in a sidecar directory instead of
     # inline, so fold it in alongside the other config files. Raised outside the
     # block above so the missing file is not reported as a missing config.json.
-    if "BoundaryExtractor" in (config.get("architectures") or ()):
+    if set(config.get("architectures") or ()).intersection(
+        {"BoundaryExtractor", "SpanExtractor"}
+    ):
         if "encoder_config" not in config:
             encoder_config_path = model_path / "encoder_config" / "config.json"
             if not encoder_config_path.is_file():
