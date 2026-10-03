@@ -672,6 +672,45 @@ def test_dense_model(name):
     ModelChecks().forward_cache(model, config["vocab_size"])
 
 
+def test_qwen3_rope_parameters_config():
+    from mlx_vlm.models import qwen3
+
+    base = {
+        "model_type": "qwen3",
+        "hidden_size": 32,
+        "num_hidden_layers": 1,
+        "intermediate_size": 64,
+        "num_attention_heads": 4,
+        "rms_norm_eps": 1e-6,
+        "vocab_size": 64,
+        "num_key_value_heads": 2,
+        "max_position_embeddings": 128,
+        "head_dim": 8,
+        "tie_word_embeddings": True,
+    }
+    rope_parameters = {"rope_theta": 1_000_000, "rope_type": "default"}
+    config = qwen3.ModelConfig.from_dict(base | {"rope_parameters": rope_parameters})
+
+    assert config.rope_theta == 1_000_000
+    assert config.rope_scaling == rope_parameters
+    assert config.rope_parameters == rope_parameters
+
+    rope_scaling = {"rope_type": "linear", "factor": 2.0}
+    config = qwen3.ModelConfig.from_dict(
+        base
+        | {
+            "rope_theta": 10_000,
+            "rope_scaling": rope_scaling,
+            "rope_parameters": rope_parameters,
+        }
+    )
+    assert config.rope_theta == 10_000
+    assert config.rope_scaling == rope_scaling
+
+    with pytest.raises(ValueError, match="rope_theta is missing"):
+        qwen3.ModelConfig.from_dict(base)
+
+
 def tiny_config(family, profile=None, **overrides):
     """Build a fresh tiny config, optionally selecting a named test profile."""
     case = TINY_MODELS[family]
