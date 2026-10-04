@@ -453,7 +453,7 @@ def configure_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dwq-target-dir",
-        help="Load cached top-k teacher targets created by mlx_vlm.dwq.",
+        help="Load cached top-k teacher targets created by mlx_vlm.quant.dwq.",
         type=str,
         default=None,
     )
