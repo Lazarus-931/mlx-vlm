@@ -153,13 +153,13 @@ def _has_decoder(module):
 
 def _apply_awq_calibration(model, processor, target, q_bits, q_group_size):
     """Calibrate on default text and apply AWQ scaling to the decoder in place."""
-    from .quant import DEFAULT_CALIBRATION_TEXT, apply_awq, collect_activation_stats
+    from .quant import apply_awq, collect_activation_stats, text_calibration_inputs
 
-    tokenizer = getattr(processor, "tokenizer", processor)
+    calibration_inputs = text_calibration_inputs(processor)
     language_model = getattr(model, "language_model", None)
     root = language_model if _has_decoder(language_model) else target
 
-    probe = mx.array([tokenizer.encode(DEFAULT_CALIBRATION_TEXT[0])])
+    probe = calibration_inputs[0]
     forward = None
     for candidate in (getattr(root, "model", None), root, language_model):
         if candidate is None:
@@ -174,8 +174,8 @@ def _apply_awq_calibration(model, processor, target, q_bits, q_group_size):
         raise RuntimeError("Could not run a calibration forward pass for AWQ.")
 
     def run():
-        for text in DEFAULT_CALIBRATION_TEXT:
-            mx.eval(forward(mx.array([tokenizer.encode(text)])))
+        for input_ids in calibration_inputs:
+            mx.eval(forward(input_ids))
 
     stats = collect_activation_stats(root, run)
     summary = apply_awq(root, stats, bits=q_bits or 4, group_size=q_group_size or 64)
@@ -185,13 +185,13 @@ def _apply_awq_calibration(model, processor, target, q_bits, q_group_size):
 def _prepare_dwq(model, processor, target, max_tokens=128, target_dir=None):
     """Build the logits forward, calibration inputs and cached teacher for DWQ."""
     from .quant import (
-        DEFAULT_CALIBRATION_TEXT,
         capture_teacher,
         load_teacher_target,
         logits_forward,
+        text_calibration_inputs,
+        validate_teacher_targets,
     )
 
-    tokenizer = getattr(processor, "tokenizer", processor)
     is_text = getattr(model, "_is_text_model", False)
     module = target if is_text else model
     forward = logits_forward(module)
@@ -200,12 +200,14 @@ def _prepare_dwq(model, processor, target, max_tokens=128, target_dir=None):
         forward = logits_forward(module)
     if forward is None:
         raise RuntimeError("Could not run a logits forward pass for DWQ.")
-    inputs = [
-        mx.array([tokenizer.encode(text)[:max_tokens]])
-        for text in DEFAULT_CALIBRATION_TEXT
-    ]
+    inputs = text_calibration_inputs(processor, max_tokens)
     if target_dir is not None:
         target_dir = Path(target_dir)
+        validate_teacher_targets(
+            target_dir,
+            inputs,
+            {"max_seq_length": max_tokens, "calibration": "built-in-text-v1"},
+        )
         missing = [
             i
             for i in range(len(inputs))

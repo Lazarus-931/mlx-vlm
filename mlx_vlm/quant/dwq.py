@@ -7,6 +7,8 @@ teacher's output distribution over a calibration set. Pure mlx.
 """
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -69,6 +71,7 @@ def save_teacher_targets(
     target_dir: Union[str, Path],
     split: str = "train",
     top_k: int = 1024,
+    metadata: Optional[dict] = None,
 ) -> None:
     """Persist compact teacher targets so the teacher can be unloaded.
 
@@ -78,6 +81,21 @@ def save_teacher_targets(
     """
     path = Path(target_dir) / split
     path.mkdir(parents=True, exist_ok=True)
+    input_hashes = [
+        hashlib.sha256(json.dumps(ids.tolist()).encode()).hexdigest()
+        for ids in inputs
+    ]
+    manifest = {
+        "format_version": 1,
+        "split": split,
+        "samples": len(inputs),
+        "top_k": top_k,
+        "input_hashes": input_hashes,
+        **(metadata or {}),
+    }
+    (Path(target_dir) / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
     for index, ids in enumerate(inputs):
         logits = mx.stop_gradient(forward(ids).astype(mx.float32), stream=mx.cpu)
         mx.eval(logits)
@@ -95,6 +113,27 @@ def load_teacher_target(
 ) -> Tuple[mx.array, mx.array]:
     target = mx.load(Path(target_dir) / split / f"{index:010d}.safetensors")
     return target["logits"], target["indices"]
+
+
+def validate_teacher_targets(target_dir, inputs, expected=None):
+    manifest_path = Path(target_dir) / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"Missing DWQ target manifest: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
+    actual_hashes = [
+        hashlib.sha256(json.dumps(ids.tolist()).encode()).hexdigest()
+        for ids in inputs
+    ]
+    required = {"format_version": 1, "samples": len(inputs), "input_hashes": actual_hashes}
+    required.update(expected or {})
+    mismatches = {
+        key: (manifest.get(key), value)
+        for key, value in required.items()
+        if manifest.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(f"DWQ target manifest mismatch: {mismatches}")
+    return manifest
 
 
 def apply_dwq(
@@ -161,22 +200,13 @@ def apply_dwq(
     }
 
 
-def _text_inputs(processor, max_seq_length):
-    from .calibration import DEFAULT_CALIBRATION_TEXT
-
-    tokenizer = getattr(processor, "tokenizer", processor)
-    return [
-        mx.array([tokenizer.encode(text)[:max_seq_length]])
-        for text in DEFAULT_CALIBRATION_TEXT
-    ]
-
-
 def main():
     """Run the standalone, two-stage DWQ conversion workflow."""
     # Keep orchestration imports lazy: convert imports the quant package.
     from ..convert import convert, fetch_from_hub, skip_multimodal_module
     from ..quant_utils import quantize_model
     from ..utils import get_model_path
+    from .calibration import text_calibration_inputs
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
@@ -189,20 +219,9 @@ def main():
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--learning-rate", type=float, default=3e-6)
     parser.add_argument("--max-seq-length", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-checkpoint", action="store_true")
-    parser.add_argument(
-        "--calibration", choices=("text", "multimodal"), default="text"
-    )
     args = parser.parse_args()
 
-    if args.batch_size != 1:
-        raise ValueError("The built-in calibration corpus currently uses batch size 1.")
-    if args.calibration == "multimodal":
-        raise ValueError(
-            "Multimodal DWQ requires an explicit calibration dataset; the default "
-            "corpus is text-only."
-        )
     if args.targets_only and not args.target_dir:
         parser.error("--targets-only requires --target-dir")
 
@@ -227,8 +246,15 @@ def main():
             raise RuntimeError("Model does not expose a language-logits forward pass.")
         save_teacher_targets(
             forward,
-            _text_inputs(processor, args.max_seq_length),
+            text_calibration_inputs(processor, args.max_seq_length),
             Path(args.target_dir),
+            metadata={
+                "model": args.model,
+                "max_seq_length": args.max_seq_length,
+                "teacher_bits": args.teacher_bits,
+                "group_size": args.group_size,
+                "calibration": "built-in-text-v1",
+            },
         )
         return
 

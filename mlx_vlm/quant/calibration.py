@@ -29,6 +29,15 @@ DEFAULT_CALIBRATION_TEXT: List[str] = [
 ]
 
 
+def text_calibration_inputs(processor, max_seq_length=None) -> List[mx.array]:
+    """Tokenize the shared built-in calibration corpus."""
+    tokenizer = getattr(processor, "tokenizer", processor)
+    inputs = [tokenizer.encode(text) for text in DEFAULT_CALIBRATION_TEXT]
+    if max_seq_length is not None:
+        inputs = [tokens[:max_seq_length] for tokens in inputs]
+    return [mx.array([tokens]) for tokens in inputs]
+
+
 def _named_linears(model: nn.Module) -> Dict[int, str]:
     return {
         id(module): path
