@@ -182,9 +182,14 @@ def _apply_awq_calibration(model, processor, target, q_bits, q_group_size):
     print(f"[INFO] AWQ scaling applied: {summary}")
 
 
-def _prepare_dwq(model, processor, target, max_tokens=128):
+def _prepare_dwq(model, processor, target, max_tokens=128, target_dir=None):
     """Build the logits forward, calibration inputs and cached teacher for DWQ."""
-    from .quant import DEFAULT_CALIBRATION_TEXT, capture_teacher, logits_forward
+    from .quant import (
+        DEFAULT_CALIBRATION_TEXT,
+        capture_teacher,
+        load_teacher_target,
+        logits_forward,
+    )
 
     tokenizer = getattr(processor, "tokenizer", processor)
     is_text = getattr(model, "_is_text_model", False)
@@ -199,7 +204,20 @@ def _prepare_dwq(model, processor, target, max_tokens=128):
         mx.array([tokenizer.encode(text)[:max_tokens]])
         for text in DEFAULT_CALIBRATION_TEXT
     ]
-    teacher = capture_teacher(forward, inputs)
+    if target_dir is not None:
+        target_dir = Path(target_dir)
+        missing = [
+            i
+            for i in range(len(inputs))
+            if not (target_dir / "train" / f"{i:010d}.safetensors").exists()
+        ]
+        if missing:
+            raise FileNotFoundError(
+                f"Missing cached DWQ targets in {target_dir}: indices {missing}"
+            )
+        teacher = lambda index: load_teacher_target(target_dir, index)
+    else:
+        teacher = capture_teacher(forward, inputs)
     return module, forward, inputs, teacher
 
 
@@ -213,6 +231,9 @@ def convert(
     quant_method: str = "rtn",
     dwq_steps: int = 200,
     dwq_lr: float = 3e-6,
+    dwq_target_dir: Optional[str] = None,
+    dwq_grad_checkpoint: bool = False,
+    dwq_max_seq_length: int = 128,
     dtype: Optional[str] = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
@@ -284,7 +305,13 @@ def convert(
 
         dwq_state = None
         if do_dwq:
-            dwq_state = _prepare_dwq(model, processor, target)
+            dwq_state = _prepare_dwq(
+                model,
+                processor,
+                target,
+                max_tokens=dwq_max_seq_length,
+                target_dir=dwq_target_dir,
+            )
 
         if do_awq:
             print("[INFO] Calibrating (AWQ)")
@@ -307,7 +334,13 @@ def convert(
             module, forward, inputs, teacher = dwq_state
             print("[INFO] Distilling (DWQ)")
             summary = apply_dwq(
-                module, forward, inputs, teacher, steps=dwq_steps, lr=dwq_lr
+                module,
+                forward,
+                inputs,
+                teacher,
+                steps=dwq_steps,
+                lr=dwq_lr,
+                gradient_checkpoint=dwq_grad_checkpoint,
             )
             print(f"[INFO] DWQ applied: {summary}")
 
@@ -415,6 +448,23 @@ def configure_parser() -> argparse.ArgumentParser:
         help="Distillation learning rate for DWQ quantization methods.",
         type=float,
         default=3e-6,
+    )
+    parser.add_argument(
+        "--dwq-target-dir",
+        help="Load cached top-k teacher targets created by mlx_vlm.dwq.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--dwq-grad-checkpoint",
+        help="Checkpoint decoder layers while optimizing DWQ scales and biases.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--dwq-max-seq-length",
+        help="Maximum calibration sequence length used by DWQ.",
+        type=int,
+        default=128,
     )
     parser.add_argument(
         "--dtype",
