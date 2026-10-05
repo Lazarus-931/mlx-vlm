@@ -333,7 +333,7 @@ class ModelChecks:
             width = kwargs.pop("projector_output_dim", width)
         batch = kwargs.pop("batch_size", 1)
         flat = (
-            "qwen2_5_vl qwen3_5 qwen3_5_moe qwen4_exp "
+            "qwen2_5_vl qwen3_5 qwen3_5_moe qwen4_exp agnes_vision "
             "glm4v_moe glm4v hunyuan_vl siglip2_vision_model mimovl"
         ).split()
         shape = (

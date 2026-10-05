@@ -199,6 +199,8 @@ class VisionModel(nn.Module):
             "qwen3_5_moe_vision",
             "qwen4_exp",
             "qwen4_exp_vision",
+            "agnes",
+            "agnes_vision",
         ]:
             raise ValueError(f"Unsupported model type: {self.model_type}")
 

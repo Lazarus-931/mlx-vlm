@@ -54,6 +54,7 @@ MODEL_CONFIG = {
     "qwen3_5_moe": MessageFormat.LIST_WITH_IMAGE_FIRST,
     "qwen4_exp": MessageFormat.LIST_WITH_IMAGE_FIRST,
     "qwen3_omni_moe": MessageFormat.LIST_WITH_IMAGE_FIRST,
+    "agnes": MessageFormat.LIST_WITH_IMAGE_FIRST,
     "minicpmo": MessageFormat.IMAGE_TOKEN,
     "minicpmv4_6": MessageFormat.IMAGE_TOKEN_WRAPPED,
     "mistral3": MessageFormat.LIST_WITH_IMAGE_FIRST,
